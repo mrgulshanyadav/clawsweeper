@@ -4,6 +4,9 @@ inputs:
   auth-mode:
     description: Authentication mode. Use proxy to keep OPENAI_API_KEY out of Codex subprocesses, or login for legacy codex login.
     default: "proxy"
+  provider:
+    description: Model provider. "openai" uses the local Responses proxy. "nvidia" points Codex directly at NVIDIA NIM (OpenAI Chat-compatible) using NVIDIA_API_KEY.
+    default: "openai"
   codex-home:
     description: CODEX_HOME directory. Defaults to an isolated per-run ClawSweeper directory.
     default: ""
@@ -40,7 +43,7 @@ runs:
         install_env=(env -u OPENAI_API_KEY -u CODEX_API_KEY -u PROXY_API_KEY -u CLAWSWEEPER_INTERNAL_MODEL)
         "${install_env[@]}" npm install -g "@openai/codex@latest" \
           --prefer-online --no-audit --no-fund --ignore-scripts
-        if [[ "${{ inputs['auth-mode'] }}" == "proxy" ]]; then
+        if [[ "${{ inputs['auth-mode'] }}" == "proxy" && "${{ inputs['provider'] }}" != "nvidia" ]]; then
           "${install_env[@]}" npm install -g "@openai/codex-responses-api-proxy@latest" \
             --prefer-online --no-audit --no-fund --ignore-scripts
         fi
@@ -72,7 +75,7 @@ runs:
         chmod 600 "$CODEX_HOME/config.toml"
 
     - name: Authenticate Codex through Responses proxy
-      if: ${{ inputs['auth-mode'] == 'proxy' }}
+      if: ${{ inputs['auth-mode'] == 'proxy' && inputs['provider'] != 'nvidia' }}
       shell: bash
       run: |
         set -euo pipefail
@@ -106,6 +109,30 @@ runs:
         EOF
         chmod 600 "$CODEX_HOME/config.toml"
         echo "Configured Codex Responses proxy on localhost."
+
+    - name: Authenticate Codex with NVIDIA NIM (direct chat)
+      if: ${{ inputs['auth-mode'] == 'proxy' && inputs['provider'] == 'nvidia' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        export CODEX_HOME="${CODEX_HOME:?}"
+        test -n "${NVIDIA_API_KEY:-}"
+        test -n "${CLAWSWEEPER_INTERNAL_MODEL:-}"
+        model_json="$(node -e 'process.stdout.write(JSON.stringify(process.argv[1]))' "$CLAWSWEEPER_INTERNAL_MODEL")"
+        base_url="${NVIDIA_NIM_BASE_URL:-https://integrate.api.nvidia.com/v1}"
+        base_json="$(node -e 'process.stdout.write(JSON.stringify(process.argv[1]))' "$base_url")"
+        cat > "$CODEX_HOME/config.toml" <<EOF
+        model = ${model_json}
+        model_provider = "nvidia-nim"
+
+        [model_providers.nvidia-nim]
+        name = "NVIDIA NIM"
+        base_url = ${base_json}
+        wire_api = "chat"
+        env_key = "NVIDIA_API_KEY"
+        EOF
+        chmod 600 "$CODEX_HOME/config.toml"
+        echo "Configured Codex for NVIDIA NIM (wire_api=chat). NOTE: NVIDIA_API_KEY is visible to the Codex subprocess (no Responses proxy for NIM)."
 
     - name: Authenticate Codex with login
       if: ${{ inputs['auth-mode'] == 'login' }}
